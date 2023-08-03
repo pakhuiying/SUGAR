@@ -1,0 +1,13 @@
+__pycache__
+rawimages/
+QAQC_plots/
+QAQC_relabel/
+saved_bboxes/
+saved_bboxes_1/
+saved_bboxes_1_continue/
+saved_data1/
+saved_bboxes_complement/
+problems.ipynb
+corrected_images/
+validate_corrected_images/
+database_*.
