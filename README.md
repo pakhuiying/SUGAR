@@ -4,7 +4,9 @@ A *sweet, and simple* algorithm for sun glint correction of high resolution UAV 
 
 ![SUGAR](images/sugar_graphical_abstract.jpg)
 
-See [published paper] here
+Pak, H.Y., Law, A.W.K., Lin, W.S., Khoo, E. (2023). Sun Glint-Aware Restoration (SUGAR): 
+a comprehensive sun glint correction algorithm for sub-meter UAV imageries with uncertainty quantification. *Submitted to ISPRS Journal of Photogrammetry and Remote Sensing*.
+
 ## Tutorial
 
 - A "How-to-use" guide provided by the sugar notebook - `SUGAR.ipynb`
