@@ -24,12 +24,13 @@ import algorithms.uncertainty_estimation as uncertainty
 
 # SUn-Glint-Aware Restoration (SUGAR):A sweet and simple algorithm for correcting sunglint
 class SUGAR:
-    def __init__(self, im_aligned,bounds=[(1,2)],sigma=1,estimate_background=True):
+    def __init__(self, im_aligned,bounds=[(1,2)],sigma=1,estimate_background=True, glint_mask_method="cdf"):
         """
         :param im_aligned (np.ndarray): band aligned and calibrated & corrected reflectance image
         :param bounds (a list of tuple): lower and upper bound for optimisation of b for each band
         :param sigma (float): smoothing sigma for LoG
         :param estimate_background (bool): whether to estimate background spectra using median filtering
+        :param glint_mask_method (str): choose either "cdf" or "otsu", "cdf" is set as the default
         """
         self.im_aligned = im_aligned
         self.sigma = sigma
@@ -41,10 +42,11 @@ class SUGAR:
         self.bounds = bounds*self.n_bands
         self.NIR_band = list(self.wavelength_dict)[-1]
         self.R_min = np.percentile(self.im_aligned[:,:,self.NIR_band].flatten(),5,interpolation='nearest')
+        self.glint_mask_method = glint_mask_method
 
     def otsu_thresholding(self,im):
         """
-        :param im (np.ndarray) of shape mxn
+        :param im (np.ndarray) of shape mxn. Note that it is the LoG of image
         otsu thresholding with Brent's minimisation of a univariate function
         returns the value of the threshold for input
         """
@@ -56,6 +58,7 @@ class SUGAR:
         hist_norm = count/count.sum() #normalised histogram
         Q = hist_norm.cumsum() # CDF function ranges from 0 to 1
         N = count.shape[0]
+        N_negative = bin[bin<0].shape[0]
         bins = np.arange(N)
         
         def otsu_thresh(x):
@@ -72,9 +75,21 @@ class SUGAR:
         
         # brent method is used to minimise an univariate function
         # bounded minimisation
-        res = minimize_scalar(otsu_thresh, bounds=(1, N), method='bounded')
+        # res = minimize_scalar(otsu_thresh, bounds=(1, N), method='bounded')
+        # we can just limit the search to negative values since we know thresh should be negative as L<0 for glint pixels
+        res = minimize_scalar(otsu_thresh, bounds=(1, N_negative), method='bounded')
         thresh = bin[int(res.x)]
         
+        return thresh
+
+    def cdf_thresholding(self,im,auto_bins=10):
+        """
+        :param im (np.ndarray) of shape mxn. Note that it is the LoG of image
+        :param percentile (float): lower and upper percentile values are potential glint pixels
+        """
+        count,bin,_ = plt.hist(im.flatten(),bins=auto_bins)
+        plt.close()
+        thresh = bin[np.argmax(count)]
         return thresh
 
     def glint_list(self):
@@ -116,12 +131,20 @@ class SUGAR:
         # take the absolute value of laplacian because the sign doesnt really matter, we want all edges
         # im_smooth = np.abs(ndimage.gaussian_laplace(im_copy,sigma=self.sigma))
         # im_smooth = im_smooth/np.max(im_smooth)
-        im_smooth = ndimage.gaussian_laplace(im,sigma=self.sigma)
+        LoG_im = ndimage.gaussian_laplace(im,sigma=self.sigma)
         #threshold mask
-        thresh = self.otsu_thresholding(im_smooth)
-        # glint_threshold.append(thresh)
-        glint_mask = np.where(im_smooth<thresh,1,0)
-
+        if (self.glint_mask_method == "otsu"):
+            thresh = self.otsu_thresholding(LoG_im)
+            # glint_threshold.append(thresh)
+            # glint_mask = np.where(LoG_im<thresh,1,0)
+        elif (self.glint_mask_method == "cdf"):
+            thresh = self.cdf_thresholding(LoG_im)
+            # lower_thresh,upper_thresh = self.cdf_thresholding(LoG_im)
+            # glint_mask = np.where((LoG_im>lower_thresh) & (LoG_im<upper_thresh),0,1)
+        else:
+            raise ValueError('Enter only cdf or otsu as glint_mask_method')
+        # glint_mask = np.where((LoG_im>thresh) & (LoG_im<-thresh),0,1)
+        glint_mask = np.where(LoG_im<thresh,1,0)
         return glint_mask
     
     def get_est_background(self, im,k_size=5):
@@ -346,18 +369,19 @@ class SUGAR:
             plt.close()
         return
 
-def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=True,get_glint_mask=False,plot=False):
+def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=True,glint_mask_method="cdf",get_glint_mask=False,plot=False,save_fp=None):
     """
     :param im_aligned (np.ndarray): band aligned and calibrated & corrected reflectance image
     :param iter (int): number of iterations to run the sugar algorithm
     :param bounds (list of tuples): to limit correction magnitude
     :param get_glint_mask (np.ndarray): 
+    :param save_fp (str): full filepath of filename
     conducts iterative correction using SUGAR
     """
     glint_image = im_aligned.copy()
     corrected_images = []
     for i in range(iter):
-        HM = SUGAR(glint_image,bounds,estimate_background=estimate_background)
+        HM = SUGAR(glint_image,bounds,estimate_background=estimate_background, glint_mask_method=glint_mask_method)
         corrected_bands = HM.get_corrected_bands()
         glint_image = np.stack(corrected_bands,axis=2)
         # save corrected bands for each iteration
@@ -372,13 +396,17 @@ def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=
         fig, axes = plt.subplots(nrows,2,figsize=(10,4*nrows))
         for i,(im, ax) in enumerate(zip(corrected_images,axes.flatten())):
             ax.set_title(f'Iter {i} ' + r'($\sigma^2_T$' + f': {np.var(im):.4f})')
-            ax.imshow(np.take(im,[2,1,0],axis=2))
+            display_im = np.take(im,[2,1,0],axis=2)
+            ax.imshow(np.clip(display_im,0,1))
             ax.axis('off')
         
         n_axis = nrows*2
         n_del = int(n_axis - len(corrected_images))
         for ax in axes.flatten()[-n_del:]:
             ax.set_axis_off()
+        if (save_fp is not None):
+            fn = os.path.splitext(save_fp)[0]
+            fig.savefig(f'{fn}.png')
         plt.show()
         # b_list = HM.b_list
         # bounds = [(1,b*1.2) for b in b_list]
@@ -403,11 +431,11 @@ class SUGARpipeline:
         self.n_bands = im_aligned.shape[-1]
         self.bounds = bounds*self.n_bands
 
-    def main(self):
+    def main(self,folder_name="saved_plots"):
         corrected_im_background, glint_mask = correction_iterative(self.im_aligned,iter=self.iter, bounds = self.bounds,estimate_background=True,get_glint_mask=True)
         corrected_im = correction_iterative(self.im_aligned,iter=self.iter, bounds = self.bounds,estimate_background=False,get_glint_mask=False)
         # save images
-        parent_dir = os.path.join(os.getcwd(),"saved_plots")
+        parent_dir = os.path.join(os.getcwd(),folder_name)
         if not os.path.exists(parent_dir):
             os.mkdir(parent_dir)
         
@@ -441,5 +469,3 @@ class SUGARpipeline:
         UE.get_uncertainty_bounds(save_dir = uncertainty_fp)
         UE.get_glint_kde(save_dir = uncertainty_fp+'_kde')
         return
-
-
