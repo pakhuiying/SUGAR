@@ -10,6 +10,10 @@ import matplotlib.patches as patches
 from matplotlib.collections import LineCollection
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.lines import Line2D
+import matplotlib.colors as colors
+import matplotlib.cm as cmx
+from decimal import Decimal
 import PIL.Image as Image
 import json
 import glob
@@ -265,7 +269,7 @@ class SimulateBackground:
                  glint_fp,
                  fp_rrs, fp_meta, water_type, sigma=10, n_rrs=5, scale=5, set_seed=False,# image fine-tuning
                  rotation=90,strength=10,radius=120,# image distortion
-                 estimate_background=True, iter=3, # parameters in SUGAR
+                 estimate_background=True, iter=3, bounds=[(1,2)],glint_mask_method='cdf', # parameters in SUGAR
                  y_line=None,x_range=None):
         
         self.glint_fp = glint_fp
@@ -284,6 +288,8 @@ class SimulateBackground:
         # SUGAR parameters
         self.estimate_background = estimate_background
         self.iter = iter
+        self.bounds = bounds
+        self.glint_mask_method = glint_mask_method
         # plotting parameters
         self.y_line = y_line
         self.x_range = x_range
@@ -292,9 +298,9 @@ class SimulateBackground:
         wavelengths = mutils.sort_bands_by_wavelength()
         self.wavelength_dict = {i[0]:i[1] for i in wavelengths}
     
-    def correction_iterative(self,glint_image,bounds = [(1,2)],plot=False):
+    def correction_iterative(self,glint_image,plot=False):
         for i in range(self.iter):
-            HM = sugar.SUGAR(glint_image,bounds,estimate_background=self.estimate_background)
+            HM = sugar.SUGAR(glint_image,bounds=self.bounds,estimate_background=self.estimate_background,glint_mask_method=self.glint_mask_method)
             corrected_bands = HM.get_corrected_bands()
             glint_image = np.stack(corrected_bands,axis=2)
             if plot is True:
@@ -361,9 +367,10 @@ class SimulateBackground:
         return {'Simulated background':water_spectra,
                 'Simulated glint': simulated_glint}
     
-    def simulation(self,iter=3,bounds= [(1,2)]):
+    def simulation(self):
         """
         :param iter (int): number of iterations to run the correction
+        :param glint_mask_method (str): choose between cdf or otsu
         returns simulated_background, simulated_glint, and corrected_img
         """
         simulated_im = self.simulate_background()
@@ -372,8 +379,18 @@ class SimulateBackground:
         simulated_glint = simulated_im['Simulated glint']
 
         nrow,ncol = simulated_glint.shape[0],simulated_glint.shape[1]
-        corrected_bands = sugar.correction_iterative(simulated_glint, iter=iter, bounds = bounds,estimate_background=False,get_glint_mask=False)
-        corrected_bands_background = sugar.correction_iterative(simulated_glint, iter=iter, bounds = bounds,estimate_background=True,get_glint_mask=False)
+        corrected_bands = sugar.correction_iterative(simulated_glint, 
+                                                     iter=self.iter, 
+                                                     bounds = self.bounds,
+                                                     estimate_background=False,
+                                                     get_glint_mask=False, 
+                                                     glint_mask_method=self.glint_mask_method)
+        corrected_bands_background = sugar.correction_iterative(simulated_glint, 
+                                                                iter=self.iter, 
+                                                                bounds = self.bounds,
+                                                                estimate_background=True,
+                                                                get_glint_mask=False, 
+                                                                glint_mask_method=self.glint_mask_method)
 
         im_list = {'R_BG':water_spectra,
                 'R_T': simulated_glint,
@@ -399,7 +416,7 @@ class SimulateBackground:
             y = water_spectra.flatten()
             y_hat = im.flatten()
             rmse = (np.sum(((y-y_hat)**2))/y.shape[0])**(1/2)
-            axes[0,i].set_title(title + r'($\sigma^2_T$' + f': {np.var(im):.4f}), RMSE = {rmse:.4f}')
+            axes[0,i].set_title(title + '\n' + r'($\sigma^2_T$' + f': {np.var(im):.4f}), RMSE = {rmse:.4f}')
             # plot original reflectance
             axes[1,i].plot(x,og_y,label=r'$R_{BG}(\lambda)$')
             # plot simulated glint reflectance
@@ -421,7 +438,8 @@ class SimulateBackground:
             ax.set_xlabel("Wavelength (nm)")
             ax.set_ylabel("Reflectance")
             ax.set_ylim(y1,y2)
-            ax.legend(loc='upper right')
+            # ax.legend(loc='upper right')
+            # ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),ncol=3)
 
         y1,y2 = axes[2,1].get_ylim()
         for i,ax in enumerate(axes[2,:]):
@@ -429,7 +447,25 @@ class SimulateBackground:
             ax.set_xlabel("Image position")
             ax.set_ylabel("Reflectance")
             ax.set_ylim(y1,y2)
-            ax.legend(loc='upper right')
+            # ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),ncol=3)
+
+        # manually add legend for the entire figure
+        colors = ['white','#1f77b4', '#ff7f0e', '#2ca02c'] #blue,orange,green
+        lines = [Line2D([0], [0], linewidth=3,c=c) for c in colors]
+        labels = ['Row #2 legends: ',r'$R_T(\lambda)$',r'$R_{BG}(\lambda)$',r'$R_T(\lambda)\prime$']
+
+        colors1 = ['white','b', 'r','g'] #blue,orange,green
+        lines1 = [Line2D([0], [0], linewidth=3,c=c,alpha=0.5) for c in colors1]
+        labels1 = ['Row #3 legends: ','b','r','g']
+
+        handles = lines+lines1
+        labels = labels+labels1
+
+        reindex_fun = lambda nrow, ncol, idx: ncol*(idx%nrow) + idx//nrow
+
+        handles_reindex = [handles[reindex_fun(2,4,i)] for i in range(len(handles))]
+        labels_reindex = [labels[reindex_fun(2,4,i)] for i in range(len(labels))]
+        fig.legend(handles=handles_reindex,labels=labels_reindex,loc='upper center', bbox_to_anchor=(0.5, 0),ncol=4)
 
         plt.tight_layout()
         plt.show()
@@ -630,7 +666,8 @@ def compare_plots(im_list, title_list, bbox=None, save_dir = None):
                 avg_reflectance = [np.mean(im[:,:,band_number]) for band_number in range(n_bands)]
             y = [avg_reflectance[i] for i in list(wavelength_dict)]
             axes[1,i].plot(x,y,label=r'$R_T(\lambda)\prime$')
-        axes[1,i].legend(loc="upper right")
+        # axes[1,i].legend(loc="upper right")
+        # axes[1,i].legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),ncol=3)
         axes[1,i].set_title(r'$R_T(\lambda)\prime$'+' in AOI')
         axes[1,i].set_xlabel('Wavelengths (nm)')
         axes[1,i].set_ylabel('Reflectance')
@@ -650,39 +687,242 @@ def compare_plots(im_list, title_list, bbox=None, save_dir = None):
             axes[row_idx,i].plot(list(range(w)),rgb_cropped[h//2,:,j],c=c,alpha=0.5,label=c)
         axes[row_idx,i].set_xlabel('Image position')
         axes[row_idx,i].set_ylabel('Reflectance')
-        axes[row_idx,i].legend(loc="upper right")
+        # axes[row_idx,i].legend(loc="upper right")
+        # axes[row_idx,i].legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),ncol=3)
         axes[row_idx,i].set_title(r'$R_T(\lambda)\prime$'+' along red line')
     
     y1,y2 = axes[row_idx,0].get_ylim()
     for i in range(len(im_list)):
         axes[row_idx,i].set_ylim(y1,y2)
     
+    # manually add legend for the entire figure
+    colors = ['white','#1f77b4', '#ff7f0e', 'white'] #blue,orange,green
+    lines = [Line2D([0], [0], linewidth=3,c=c) for c in colors]
+    labels = ['Row #2 legends: ',r'$R_T(\lambda)$',r'$R_T(\lambda)\prime$','']
+
+    colors1 = ['white','b', 'r','g'] #blue,orange,green
+    lines1 = [Line2D([0], [0], linewidth=3,c=c,alpha=0.5) for c in colors1]
+    labels1 = ['Row #4 legends: ','b','r','g']
+
+    handles = lines+lines1
+    labels = labels+labels1
+
+    reindex_fun = lambda nrow, ncol, idx: ncol*(idx%nrow) + idx//nrow
+
+    handles_reindex = [handles[reindex_fun(2,4,i)] for i in range(len(handles))]
+    labels_reindex = [labels[reindex_fun(2,4,i)] for i in range(len(labels))]
+    fig.legend(handles=handles_reindex,labels=labels_reindex,loc='upper center', bbox_to_anchor=(0.5, 0),ncol=4)
+
     plt.tight_layout()
     
 
     if save_dir is not None:
-        fig.savefig('{}.png'.format(save_dir))
+        fig.savefig('{}.png'.format(save_dir), bbox_inches="tight")
         plt.close()
     else:
         plt.show()
     return
 
+def scatter_plot(ax,R_prime_T_BG,R_BG,wavelengths,bands_idx = [0,3,5,7,9],sampling_n = 4):
+    """ 
+    :param ax (Axes): artist to draw the plot on
+    :param R_prime_T_BG (np.ndarray): corrected reflectance
+    :param R_BG (np.ndarray): ground truth reflectance
+    :param bands_idx (list of int): choose representative wavelengths (444nm, 560nm, 668nm, 717nm and 842nm)
+    :param sampling_n (int): sample every n pixels
+    """
+    n_bands = len(wavelengths)
+    # choose representative wavelengths
+    bands = [wavelengths[i][0] for i in bands_idx]
 
-def compare_sugar_algo(im_aligned,bbox=None,corrected = None, corrected_background = None, iter=3, bounds=[(1,2)], save_dir = None):
+    spectral = plt.get_cmap('Spectral_r') 
+    cNorm  = colors.Normalize(vmin=0, vmax=n_bands-1)
+    scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=spectral)
+    values = range(n_bands)
+    
+    for idx,b in zip(bands_idx,bands):
+        colorVal = scalarMap.to_rgba(values[idx],alpha=0.5)
+        y_hat = R_prime_T_BG[::sampling_n,::sampling_n,b].flatten()
+        y = R_BG[::sampling_n,::sampling_n,b].flatten()
+        ndims = y.shape[0]
+        rmse = (np.sum(((y-y_hat)**2))/ndims)**(1/2)
+        ax.scatter(y,y_hat,alpha=0.5,s=3,color=colorVal,marker='o',label=f'{wavelengths[idx][1]}nm (RMSE={(Decimal(rmse)):.2E})')
+        # box = ax.get_position()
+        # ax.set_position([box.x0, box.y0,
+        #                 box.width*0.5, box.height])
+        # ax.legend(bbox_to_anchor=(0.8, 0.5),ncol=1,prop={"size":7})
+    R_min, R_max = R_prime_T_BG.min(), R_prime_T_BG.max()
+    ax.plot(np.linspace(R_min,R_max,10),np.linspace(R_min,R_max,10),'k--',alpha=0.5,label='1:1 line')
+    # ax.legend(loc='upper left')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2),ncol=1)
+    ax.set_xlabel(r'$R_{BG}$')
+    ax.set_ylabel(r'$R_{T,BG}\prime$')
+    ax.set_title(r'$R_{T,BG}\prime$' + ' vs ' + r'$R_{BG}$')
+    return
+
+def compare_plots_w_original(im_list, title_list, bbox=None, y_line = None,save_dir = None):
+    """
+    :param im_list (list of np.ndarray): where the first item is always the original image, and the last item is R_BG (only applicable for simulated background)
+    :param title_list (list of str): the title for the first row
+    :param bbox (tuple): bbox over glint area for Hedley algorithm
+    :param y_line (int): row index of image to plot red line and to extract reflectance
+    :param save_dir (str): Full filepath required. if None, no figure is saved.
+    """
+    rgb_bands = [2,1,0]
+    wavelengths = mutils.sort_bands_by_wavelength()
+    wavelength_dict = {i[0]:i[1] for i in wavelengths}
+    nrow, ncol, n_bands = im_list[0].shape
+    scale_plot = 2.7
+    plot_width = len(im_list)*scale_plot
+    if bbox is not None:
+        ((x1,y1),(x2,y2)) = bbox
+        coord, w, h = mutils.bboxes_to_patches(bbox)
+        plot_row = 5
+    else:
+        plot_row = 3
+    
+    plot_height = plot_row*scale_plot
+
+    fig, axes = plt.subplots(plot_row,len(im_list),figsize=(plot_width,plot_height),constrained_layout=True)
+
+    if bbox is not None:
+        og_avg_reflectance = [np.mean(im_list[0][y1:y2,x1:x2,band_number]) for band_number in range(n_bands)]
+    else:
+        og_avg_reflectance = [np.mean(im_list[0][:,:,band_number]) for band_number in range(n_bands)]
+    
+    x = list(wavelength_dict.values())
+    og_y = [og_avg_reflectance[i] for i in list(wavelength_dict)]
+
+    if bbox is not None:
+        bg_avg_reflectance = [np.mean(im_list[-1][y1:y2,x1:x2,band_number]) for band_number in range(n_bands)]
+    else:
+        bg_avg_reflectance = [np.mean(im_list[-1][:,:,band_number]) for band_number in range(n_bands)]
+
+    bg_y = [bg_avg_reflectance[i] for i in list(wavelength_dict)]
+
+    # get RMSE
+    R_BG = im_list[-1]
+    R_BG_flatten = R_BG.flatten()
+    for i,(im, title) in enumerate(zip(im_list,title_list)): #iterate acoss column
+        # plot image
+        rgb_im = np.take(im,rgb_bands,axis=2)
+        axes[0,i].imshow(rgb_im, aspect="auto")
+        # get RMSE
+        y_hat = im.flatten()
+        rmse = (np.sum(((R_BG_flatten-y_hat)**2))/R_BG_flatten.shape[0])**(1/2)
+        axes[0,i].set_title(title +'\n'+ r'$\sigma^2_T$' + f': {np.var(im):.4f}, RMSE = {rmse:.4f}')
+        axes[0,i].axis('off')
+        if bbox is not None:
+            rect = patches.Rectangle(coord, w, h, linewidth=1, edgecolor='red', facecolor='none')
+            axes[0,i].add_patch(rect)
+        # plot original reflectance
+        axes[1,i].plot(x,og_y,label=r'$R_T(\lambda)$')
+        # plot BG reflectance
+        axes[1,i].plot(x,bg_y,label=r'$R_{BG}(\lambda)$')
+        # plot corrected reflectance
+        if i > 0:
+            if bbox is not None:
+                avg_reflectance = [np.mean(im[y1:y2,x1:x2,band_number]) for band_number in range(n_bands)]
+            else:
+                avg_reflectance = [np.mean(im[:,:,band_number]) for band_number in range(n_bands)]
+            y = [avg_reflectance[i] for i in list(wavelength_dict)]
+            axes[1,i].plot(x,y,label=r'$R_T(\lambda)\prime$')
+        # axes[1,i].legend(loc="upper right")
+        axes[1,i].set_title(r'$R_T(\lambda)\prime$'+' in AOI')
+        axes[1,i].set_xlabel('Wavelengths (nm)')
+        axes[1,i].set_ylabel('Reflectance')
+
+        # plot scatter plot
+        scatter_plot(ax=axes[2,i],R_prime_T_BG=im,R_BG=R_BG,wavelengths=wavelengths)
+        if (i==0):
+            axes[2,i].set_title(r'$R_T$' + ' vs ' + r'$R_{BG}$')
+            axes[2,i].set_ylabel(r'$R_T$')
+        elif (i==len(im_list) - 1):
+            axes[2,i].set_title(r'$R_{BG}$' + ' vs ' + r'$R_{BG}$')
+            axes[2,i].set_ylabel(r'$R_{BG}$')
+
+        # plot cropped rgb
+        rgb_cropped = rgb_im[y1:y2,x1:x2,:] if bbox is not None else rgb_im
+        if bbox is not None:
+            axes[3,i].imshow(rgb_cropped, aspect="auto")
+            axes[3,i].set_title('AOI')
+            if y_line is None:
+                axes[3,i].plot([0,w-1],[abs(h)//2,abs(h)//2],color="red",linewidth=3,alpha=0.5)
+            else:
+                axes[3,i].plot([0,w-1],[y_line,y_line],color="red",linewidth=3,alpha=0.5)
+        
+        row_idx = 4 if bbox is not None else 3
+        h = nrow if bbox is None else h
+        w = ncol if bbox is None else w
+        # plot reflectance along red line
+        for j,c in enumerate(['r','g','b']):
+            if y_line is None:
+                axes[row_idx,i].plot(list(range(w)),rgb_cropped[h//2,:,j],c=c,alpha=0.5,label=c)
+            else:
+                axes[row_idx,i].plot(list(range(w)),rgb_cropped[y_line,:,j],c=c,alpha=0.5,label=c)
+        axes[row_idx,i].set_xlabel('Image position')
+        axes[row_idx,i].set_ylabel('Reflectance')
+        # axes[row_idx,i].legend(loc="upper right")
+        axes[row_idx,i].set_title(r'$R_T(\lambda)\prime$'+' along red line')
+    
+    y1,y2 = axes[row_idx,0].get_ylim()
+    for i in range(len(im_list)):
+        axes[row_idx,i].set_ylim(y1,y2)
+    
+    # manually add legend for the entire figure
+    colors = ['white','#1f77b4', '#ff7f0e', '#2ca02c'] #blue,orange,green
+    lines = [Line2D([0], [0], linewidth=3,c=c) for c in colors]
+    labels = ['Row #2 legends: ',r'$R_T(\lambda)$',r'$R_{BG}(\lambda)$',r'$R_T(\lambda)\prime$']
+
+    colors1 = ['white','b', 'r','g'] #blue,orange,green
+    lines1 = [Line2D([0], [0], linewidth=3,c=c,alpha=0.5) for c in colors1]
+    labels1 = ['Row #5 legends: ','b','r','g']
+
+    handles = lines+lines1
+    labels = labels+labels1
+
+    reindex_fun = lambda nrow, ncol, idx: ncol*(idx%nrow) + idx//nrow
+
+    handles_reindex = [handles[reindex_fun(2,4,i)] for i in range(len(handles))]
+    labels_reindex = [labels[reindex_fun(2,4,i)] for i in range(len(labels))]
+    fig.legend(handles=handles_reindex,labels=labels_reindex,loc='upper center', bbox_to_anchor=(0.5, 0),ncol=4)
+
+    # plt.tight_layout()
+    
+
+    if save_dir is not None:
+        fig.savefig('{}.png'.format(save_dir), bbox_inches="tight")
+        plt.close()
+    else:
+        plt.show()
+    return
+
+def compare_sugar_algo(im_aligned,bbox=None,corrected = None, corrected_background = None, iter=3, bounds=[(1,2)],glint_mask_method='cdf', save_dir = None):
     """
     :param im_aligned (np.ndarray): reflectance image
     :param bbox (tuple): bbox over glint area for Hedley algorithm
     :param corrected (np.ndarray): corrected for glint using SUGAR without taking into account of background
     :param corrected_background (np.ndarray): corrected for glint using SUGAR taking into account of background
     :param iter (int): number of iterations for SUGAR algorithm
+    :param glint_mask_method (str): choose either otsu or cdf
     :param save_dir (str): Full filepath required. if None, no figure is saved.
     compare SUGAR algorithm, whether to take into account of background spectra
     returns a tuple (corrected, corrected_background)
     """
     if corrected is None:
-        corrected = sugar.correction_iterative(im_aligned, iter=iter, bounds = bounds,estimate_background=False,get_glint_mask=False)
+        corrected = sugar.correction_iterative(im_aligned, 
+                                               iter=iter, 
+                                               bounds = bounds,
+                                               estimate_background=False,
+                                               glint_mask_method=glint_mask_method,
+                                               get_glint_mask=False)
     if corrected_background is None:
-        corrected_background = sugar.correction_iterative(im_aligned, iter=iter, bounds = bounds,estimate_background=True,get_glint_mask=False)
+        corrected_background = sugar.correction_iterative(im_aligned, 
+                                                          iter=iter, 
+                                                          bounds = bounds,
+                                                          estimate_background=True,
+                                                          glint_mask_method=glint_mask_method,
+                                                          get_glint_mask=False)
 
     im_list = [im_aligned,corrected[-1],corrected_background[-1]]
     title_list = [r'$R_T$',r'$R_T\prime$',r'$R_{T,BG}\prime$']
@@ -690,13 +930,13 @@ def compare_sugar_algo(im_aligned,bbox=None,corrected = None, corrected_backgrou
     compare_plots(im_list, title_list, bbox, save_dir)
     return (corrected,corrected_background)
 
-def compare_correction_algo(im_aligned,bbox,corrected_Hedley = None, corrected_Goodman = None, corrected_SUGAR = None, iter=3, save_dir = None):
+def compare_correction_algo(im_aligned,bbox,corrected_Hedley = None, corrected_Goodman = None, corrected_SUGAR = None, original_background=None,iter=3,bounds=[(1,2)],glint_mask_method='cdf', save_dir = None):
     """
     :param im_aligned (np.ndarray): reflectance image
     :param bbox (tuple): bbox over glint area for Hedley algorithm
     :param iter (int): number of iterations for SUGAR algorithm
     :param save_dir (str): Full filepath required. if None, no figure is saved.
-    compare SUGAR and Hedley algorithm
+    compare SUGAR and etc algorithm
     """
     if corrected_Hedley is None:
         HH = Hedley.Hedley(im_aligned,bbox,smoothing=False,glint_mask=False)
@@ -709,11 +949,27 @@ def compare_correction_algo(im_aligned,bbox,corrected_Hedley = None, corrected_G
         corrected_Goodman = np.stack(corrected_Goodman,axis=2)
 
     if corrected_SUGAR is None:
-        corrected_SUGAR = sugar.correction_iterative(im_aligned,iter=iter,bounds = [(1,2)],estimate_background=True,get_glint_mask=False,plot=False)
+        corrected_SUGAR = sugar.correction_iterative(im_aligned,
+                                                     iter=iter,
+                                                     bounds = bounds,
+                                                     estimate_background=True,
+                                                     glint_mask_method=glint_mask_method,
+                                                     get_glint_mask=False,
+                                                     plot=False)
     
-    im_list = [im_aligned,corrected_Hedley,corrected_Goodman,corrected_SUGAR[-1]]
-    title_list = ['Original ','Hedley ','Goodman ',f'SUGAR (iters: {iter})']
-    compare_plots(im_list, title_list, bbox, save_dir)
+    iter_title = 'auto' if iter is None else iter
+    if original_background is not None:
+        if isinstance(corrected_SUGAR, list):
+            im_list = [im_aligned,corrected_Hedley,corrected_Goodman,corrected_SUGAR[-1],original_background]
+        elif isinstance(corrected_SUGAR, np.ndarray):
+            im_list = [im_aligned,corrected_Hedley,corrected_Goodman,corrected_SUGAR,original_background]
+        title_list = ['Original ','Hedley ','Goodman ',f'SUGAR (iters: {iter_title})',r'$R_{BG}$']
+
+        compare_plots_w_original(im_list, title_list, bbox, y_line = None,save_dir = save_dir)
+    else:
+        im_list = [im_aligned,corrected_Hedley,corrected_Goodman,corrected_SUGAR[-1]]
+        title_list = ['Original ','Hedley ','Goodman ',f'SUGAR (iters: {iter_title})']
+        compare_plots(im_list, title_list, bbox, save_dir)
 
     return
 

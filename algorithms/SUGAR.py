@@ -81,6 +81,32 @@ class SUGAR:
         thresh = bin[int(res.x)]
         
         return thresh
+    
+    # def cdf_thresholding(self,im, percentile=0.05):
+    #     """
+    #     :param im (np.ndarray) of shape mxn
+    #     :param percentile (float): lower and upper percentile values are potential glint pixels
+    #     """
+    #     lower_perc = percentile
+    #     upper_perc = 1-percentile
+    #     im_flatten = im.flatten()
+    #     H,X1 = np.histogram(im_flatten, bins = int(0.005*im.shape[0]*im.shape[1]), density=True )
+    #     dx = X1[1] - X1[0]
+    #     F1 = np.cumsum(H)*dx
+    #     F_lower = X1[1:][F1<lower_perc]
+    #     F_upper = X1[1:][F1>upper_perc]
+    #     while((F_lower.size == 0) or (F_upper.size == 0)):
+    #         if (F_lower.size == 0):
+    #             lower_perc += 0.01
+    #             F_lower = X1[1:][F1<lower_perc]
+    #         if (F_upper.size == 0):
+    #             upper_perc -= 0.01
+    #             F_upper = X1[1:][F1>upper_perc]
+
+    #     lower_thresh = F_lower[-1]
+    #     upper_thresh = F_upper[0]
+
+    #     return lower_thresh,upper_thresh
 
     def cdf_thresholding(self,im,auto_bins=10):
         """
@@ -369,10 +395,10 @@ class SUGAR:
             plt.close()
         return
 
-def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=True,glint_mask_method="cdf",get_glint_mask=False,plot=False,save_fp=None):
+def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=True,glint_mask_method="cdf",get_glint_mask=False,plot=False,save_fp=None, termination_thresh = 20):
     """
     :param im_aligned (np.ndarray): band aligned and calibrated & corrected reflectance image
-    :param iter (int): number of iterations to run the sugar algorithm
+    :param iter (int or None): number of iterations to run the sugar algorithm. If None, termination conditions are automatically applied
     :param bounds (list of tuples): to limit correction magnitude
     :param get_glint_mask (np.ndarray): 
     :param save_fp (str): full filepath of filename
@@ -380,15 +406,43 @@ def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=
     """
     glint_image = im_aligned.copy()
     corrected_images = []
-    for i in range(iter):
-        HM = SUGAR(glint_image,bounds,estimate_background=estimate_background, glint_mask_method=glint_mask_method)
-        corrected_bands = HM.get_corrected_bands()
-        glint_image = np.stack(corrected_bands,axis=2)
-        # save corrected bands for each iteration
-        corrected_images.append(glint_image)
-        # save glint_mask
-        if i == 0 and get_glint_mask is True:
-            glint_mask = np.stack(HM.glint_mask,axis=2)
+
+    if iter is None:
+        # termination conditions
+        relative_difference = lambda sd0,sd1: sd1/sd0*100
+        marginal_difference = lambda sd1,sd2: (sd1-sd2)/sd1*100
+        relative_diff_thresh = marginal_difference_thresh = termination_thresh
+        corrected_images = []
+        sd_og = np.var(im_aligned)
+        iter_count = 0
+        sd_next = sd_og.copy() #keep track of the sd the iteration before
+        while ((relative_difference(sd_og,sd_next) > relative_diff_thresh)):
+            # do all the processing here
+            HM = SUGAR(glint_image,bounds,estimate_background=estimate_background, glint_mask_method=glint_mask_method)
+            corrected_bands = HM.get_corrected_bands()
+            glint_image = np.stack(corrected_bands,axis=2)
+            sd_temp = np.var(glint_image)
+            corrected_images.append(glint_image)
+            # save glint_mask
+            if iter_count == 0 and get_glint_mask is True:
+                glint_mask = np.stack(HM.glint_mask,axis=2)
+            if (marginal_difference(sd_next,sd_temp)<marginal_difference_thresh):
+                break
+            else:
+                sd_next = sd_temp
+            #increase count
+            iter_count += 1
+
+    else:
+        for i in range(iter):
+            HM = SUGAR(glint_image,bounds,estimate_background=estimate_background, glint_mask_method=glint_mask_method)
+            corrected_bands = HM.get_corrected_bands()
+            glint_image = np.stack(corrected_bands,axis=2)
+            # save corrected bands for each iteration
+            corrected_images.append(glint_image)
+            # save glint_mask
+            if i == 0 and get_glint_mask is True:
+                glint_mask = np.stack(HM.glint_mask,axis=2)
 
     if plot is True:
         corrected_images = [im_aligned] + corrected_images
@@ -414,12 +468,13 @@ def correction_iterative(im_aligned,iter=3,bounds = [(1,2)],estimate_background=
     return corrected_images if get_glint_mask is False else (corrected_images,glint_mask)
 
 class SUGARpipeline:
-    def __init__(self,im_aligned,bbox,iter=3,bounds=[(1,2)],filename=None):
+    def __init__(self,im_aligned,bbox,iter=3,bounds=[(1,2)],glint_mask_method='cdf',filename=None):
         """
         :param im_aligned (np.ndarray): band aligned and calibrated & corrected reflectance image
         :param bbox (tuple): bbox over glint area for Hedley algorithm
         :param filename (str): Full filepath required. if None, no figure is saved.
         :param bounds (a list of tuple): lower and upper bound for optimisation of b for each band
+        :param glint_mask_method (str): choose either otsu or cdf
         """
         self.im_aligned = im_aligned
         self.bbox = bbox
@@ -430,10 +485,21 @@ class SUGARpipeline:
         self.wavelength_dict = {i[0]:i[1] for i in wavelengths}
         self.n_bands = im_aligned.shape[-1]
         self.bounds = bounds*self.n_bands
+        self.glint_mask_method = glint_mask_method
 
     def main(self,folder_name="saved_plots"):
-        corrected_im_background, glint_mask = correction_iterative(self.im_aligned,iter=self.iter, bounds = self.bounds,estimate_background=True,get_glint_mask=True)
-        corrected_im = correction_iterative(self.im_aligned,iter=self.iter, bounds = self.bounds,estimate_background=False,get_glint_mask=False)
+        corrected_im_background, glint_mask = correction_iterative(self.im_aligned,
+                                                                   iter=self.iter, 
+                                                                   bounds = self.bounds,
+                                                                   estimate_background=True,
+                                                                   glint_mask_method=self.glint_mask_method,
+                                                                   get_glint_mask=True)
+        corrected_im = correction_iterative(self.im_aligned,
+                                            iter=self.iter, 
+                                            bounds = self.bounds,
+                                            estimate_background=False,
+                                            glint_mask_method=self.glint_mask_method,
+                                            get_glint_mask=False)
         # save images
         parent_dir = os.path.join(os.getcwd(),folder_name)
         if not os.path.exists(parent_dir):
@@ -460,9 +526,13 @@ class SUGARpipeline:
             mutils.get_rgb(corrected_im_background[i], normalisation = False, plot=True, save_dir=rgb_fp+f'iter{i+1}_BG')
             mutils.get_rgb(corrected_im[i], normalisation = False, plot=True, save_dir=rgb_fp+f'iter{i+1}')
         # validate with other algo
-        ValidateAlgo.compare_sugar_algo(self.im_aligned,bbox=self.bbox,corrected = corrected_im, corrected_background = corrected_im_background, iter=self.iter, bounds=self.bounds, 
+        ValidateAlgo.compare_sugar_algo(self.im_aligned,bbox=self.bbox,
+                                        corrected = corrected_im, corrected_background = corrected_im_background, 
+                                        iter=self.iter, bounds=self.bounds, glint_mask_method=self.glint_mask_method,
                                         save_dir = compare_algo_fp+'_sugar')
-        ValidateAlgo.compare_correction_algo(self.im_aligned,self.bbox,corrected_Hedley = None, corrected_Goodman = None, corrected_SUGAR = corrected_im_background, iter=self.iter, 
+        ValidateAlgo.compare_correction_algo(self.im_aligned,self.bbox,
+                                             corrected_Hedley = None, corrected_Goodman = None, corrected_SUGAR = corrected_im_background, 
+                                             iter=self.iter, bounds=self.bounds, glint_mask_method=self.glint_mask_method,
                                              save_dir = compare_algo_fp)
         # uncertainty estimation
         UE = uncertainty.UncertaintyEst(self.im_aligned,corrected_im_background, corrected_im,glint_mask=glint_mask)
