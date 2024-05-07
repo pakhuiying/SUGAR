@@ -116,60 +116,72 @@ class Hedley:
             band = band.flatten()
         return pearsonr(NIR,band)[0]
         
-    def plot_regression(self, plot = True):
+    def plot_regression(self):
         """ 
         Construct a linear regression of NIR reflectance versus the reflectance in the ith band using pixels from the deep water subset with glint
         returns a dict of regression slopes in band order i.e. band 0,1,2,3,4,5,6,7,8,9
         """
-    
-        regression_slopes = dict()
-        NIR_band = list(self.wavelength_dict)[-1]
+        #----------------plot rgb before and after correction, and magnified view of bbox----------
+        rgb_bands = [2,1,0]
+        corrected_bands = self.get_corrected_bands(plot=False)
+        rgb_im_corrected = np.stack([corrected_bands[i] for i in rgb_bands],axis=2)
+        rgb_im = np.take(self.im_aligned,rgb_bands,axis=2)
+        fig, axes = plt.subplots(1,3,figsize=(10,3))
+        axes[0].imshow(rgb_im, aspect="auto")
+        coord, w, h = mutils.bboxes_to_patches(self.bbox)
+        rect = patches.Rectangle(coord, w, h, linewidth=2, edgecolor='green', facecolor='none')
+        axes[0].add_patch(rect)
+        axes[0].set_title('Original RGB image')
+        axes[0].axis('off')
+
+        axes[2].set_title('RGB image after Hedley\'s correction')
+        axes[2].imshow(rgb_im_corrected, aspect="auto")
+        axes[2].axis('off')
+
+        axes[1].imshow(rgb_im[self.bbox[0][1]:self.bbox[1][1],self.bbox[0][0]:self.bbox[1][0],:], aspect="auto")
+        axes[1].set_title('Magnified view of selected glint region')
+        axes[1].spines[:].set_linewidth(3)
+        axes[1].spines[:].set_color('green')
+        axes[1].tick_params(left = False, right = False , labelleft = False , 
+                labelbottom = False, bottom = False)
+        # [i.set_linewidth(3) for i in axes[2].spines[:].itervalues()]
+        
+        plt.tight_layout()
+        plt.show()
+
+        #------------plot regression---------------
         if self.smoothing is True:
             NIR_pixels = self.glint_area_smoothed[:,:,self.NIR_band].flatten().reshape(-1, 1)
         else:
             NIR_pixels = self.glint_area[:,:,self.NIR_band].flatten().reshape(-1, 1)
         self.R_min = np.percentile(NIR_pixels,5,interpolation='nearest')
-
-        fig, axes = plt.subplots(self.n_bands//2,2,figsize=(10,20))
-
-        for band_number,ax in zip(range(self.n_bands),axes.flatten()):
-            if self.smoothing is True:
-                y = self.glint_area_smoothed[:,:,band_number].flatten().reshape(-1, 1)
-            else:
-                y = self.glint_area[:,:,band_number].flatten().reshape(-1, 1)
+        nrow = 3
+        ncol = 4
+        fig, axes = plt.subplots(nrow,ncol,figsize=(10,8))
+        for i, ((band_index,wavelength),ax) in enumerate(zip(self.wavelengths,axes.flatten())):
+            y = self.glint_area[:,:,band_index].flatten().reshape(-1, 1)
             b_regression, intercept, lm = self.regression_slope(NIR_pixels,y)
-            b_covariance = self.covariance(NIR_pixels,y)
-            b_least_sq = self.least_sq(NIR_pixels,y)
-            b_pearson = self.pearson(NIR_pixels,y)
-            regression_slopes[band_number] = b_regression
-            # color scatterplot density
-            xy = np.vstack([NIR_pixels.flatten(),y.flatten()])
-            try:
-                z = gaussian_kde(xy)(xy)
-                ax.scatter(NIR_pixels,y, c=z)
-            except:
-                ax.plot(NIR_pixels,y,'o')
-            r2 = r2_score(y,lm.predict(NIR_pixels))
-            ax.set_title(r'Band {}: {} nm ($R^2:$ {:.3f}, N = {})'.format(band_number, self.wavelength_dict[band_number],r2,y.shape[0]))
-            ax.set_xlabel(f'NIR reflectance (Band {self.wavelength_dict[NIR_band]})')
-            ax.set_ylabel(f'Band {self.wavelength_dict[band_number]} reflectance')
+            ax.plot(NIR_pixels,y,'.',alpha=0.15)
+            ax.set_title(f'{wavelength} nm\n'+r'$\beta =$ {:.3f}, N = {}'.format(b_regression,y.shape[0]))
+            ax.set_ylabel(r'$R_T(\lambda)$')
+            ax.set_xlabel(r'$R_T(NIR)$')
+            # plot regression line
             x_vals = np.linspace(np.min(NIR_pixels),np.max(NIR_pixels),50)
             y_vals = intercept + b_regression * x_vals
-            ax.plot(x_vals.reshape(-1,1), y_vals.reshape(-1,1), '--')
-            t1 = ax.text(0.1,ax.get_ylim()[1]*0.8,r"$y = {:.3f}x + {:.3f}$".format(b_regression,intercept))
-            t2 = ax.text(0.1,ax.get_ylim()[1]*0.6,f"Cov: {b_covariance:.3f}")
-            t3 = ax.text(0.1,ax.get_ylim()[1]*0.4,f"Least sq: {b_least_sq:.3f}")
-            t4 = ax.text(0.1,ax.get_ylim()[1]*0.2,f"Pearson: {b_pearson:.3f}")
-            for t in [t1,t2,t3,t4]:
-                t.set_bbox(dict(facecolor="white",alpha=0.5))
+            ax.plot(x_vals.reshape(-1,1), y_vals.reshape(-1,1), 'k--',linewidth = 2,label='Regression line')
+            # add 1:1 line
+            # ax.axline((0, 0), slope=1)
+        handles, labels = ax.get_legend_handles_labels()
 
-        if plot is True:
-            plt.tight_layout()
-            plt.show()
-        else:
-            plt.close()
-
-        return #regression_slopes
+        del_axes = int(nrow*ncol - len(self.wavelengths))
+        for ax in axes.flatten()[-del_axes:]:
+            ax.axis('off')
+        
+        fig.legend(handles=handles,labels=labels,loc='upper center', 
+               bbox_to_anchor=(0.55, 0.05),ncol=2,fontsize=12)
+        plt.tight_layout()
+        plt.show()
+        return
     
     def get_glint_mask(self,NIR_threshold=0.8):
         """
